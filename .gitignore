@@ -1,0 +1,5 @@
+/ledger-demo
+*.out
+coverage.*
+*.jsonl
+!internal/adapters/jsonlstore/testdata/**
