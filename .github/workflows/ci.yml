@@ -11,6 +11,7 @@ permissions:
 jobs:
   gates:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,6 +37,8 @@ jobs:
           go tool cover -func=domain.out | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
       - name: fuzz JSONL decoder (short)
         run: go test -run='^$' -fuzz=FuzzScan -fuzztime=30s ./internal/adapters/jsonlstore/
+      - name: fuzz event codec (short)
+        run: go test -run='^$' -fuzz=FuzzDecodeEvent -fuzztime=30s ./internal/app/
       - name: demo
         run: go run ./cmd/ledger-demo -file "$RUNNER_TEMP/demo.jsonl"
       - name: gitleaks

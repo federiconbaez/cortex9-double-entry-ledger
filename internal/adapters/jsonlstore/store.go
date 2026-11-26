@@ -19,6 +19,10 @@ import (
 // and must be reopened (which re-runs recovery).
 var ErrStoreFailed = errors.New("jsonlstore: store failed, reopen required")
 
+// ErrLocked means another open Store (in this or another process) holds
+// the exclusive lock on the file. The log has a single writer by design.
+var ErrLocked = errors.New("jsonlstore: file is locked by another store")
+
 // ErrClosed is returned after Close.
 var ErrClosed = errors.New("jsonlstore: closed")
 
@@ -37,8 +41,10 @@ type RecoveryReport struct {
 	TruncatedBytes int64 // torn tail removed (0 when the file was clean)
 }
 
-// Store is safe for concurrent use within one process. It does not lock
-// the file against other processes (non-goal).
+// Store is safe for concurrent use within one process. Open takes an
+// exclusive, non-blocking lock on the file (flock on Unix-like systems), so
+// a second Store on the same path, in any process, fails with ErrLocked
+// instead of silently interleaving writes with a stale in-memory index.
 type Store struct {
 	mu      sync.Mutex
 	f       file
@@ -52,10 +58,14 @@ var _ ports.EventStore = (*Store)(nil)
 
 // Open opens or creates the log at path, recovering a torn tail.
 func Open(path string) (*Store, RecoveryReport, error) {
-	_, statErr := os.Stat(path)
+	_, statErr := os.Stat(path) //nolint:gosec // path is chosen by the operator
 	created := errors.Is(statErr, os.ErrNotExist)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o600) //nolint:gosec // path is chosen by the operator
 	if err != nil {
+		return nil, RecoveryReport{}, err
+	}
+	if err := lockFile(f); err != nil {
+		_ = f.Close()
 		return nil, RecoveryReport{}, err
 	}
 	s, rep, err := recoverFrom(f)
@@ -108,7 +118,7 @@ func syncDir(dir string) error {
 	return d.Sync()
 }
 
-// Close releases the file. Further calls return ErrClosed.
+// Close releases the file and its lock. Further calls return ErrClosed.
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
