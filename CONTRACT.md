@@ -18,7 +18,9 @@ Ledger de partida doble **inmutable** con *event sourcing* y CQRS, en Go, sin de
 - Sin conversión de monedas ni tipos de cambio: cada moneda balancea por separado.
 - Sin formato de exponente ISO 4217 (`Money` guarda unidades menores; mostrar "123,45" es responsabilidad de la UI).
 - Sin snapshots, compaction ni retención: el replay es O(eventos del stream).
-- El store JSONL es de **un solo proceso** (sin lock entre procesos) y un solo archivo.
+- El store JSONL tiene **un solo escritor** y un solo archivo. Desde CX9-6206 lo hace cumplir un
+  `flock` exclusivo en Linux, macOS y los BSD (ADR 0003). En otras plataformas no hay lock.
+  No hay lectores concurrentes desde otro proceso ni soporte NFS.
 - Un `UnitOfWork` confirma **un** agregado: no hay transacciones multi-stream.
 - Sin cierre contable de períodos ni reportes regulatorios.
 
@@ -51,7 +53,8 @@ Dominio (`domain.Error{Kind, Detail}`): `ErrInvalidCurrency`, `ErrInvalidID`, `E
 `ErrOverflow`, `ErrTooFewLines`, `ErrUnbalanced`, `ErrInvalidAccount`, `ErrDuplicateAccount`, `ErrUnknownAccount`,
 `ErrDuplicateEntry`, `ErrUnknownEntry`, `ErrAlreadyReversed`, `ErrInsufficientFunds`, `ErrCorruptHistory`.
 
-Puertos/adaptadores: `ports.ErrVersionConflict` (vía `*ports.ConflictError`), `jsonlstore.ErrCorrupt`, `jsonlstore.ErrStoreFailed`.
+Puertos/adaptadores: `ports.ErrVersionConflict` (vía `*ports.ConflictError`), `jsonlstore.ErrCorrupt`, `jsonlstore.ErrStoreFailed`,
+`jsonlstore.ErrLocked` (otro `Store` tiene el archivo), `jsonlstore.ErrClosed`.
 
 ## 6. Puertos
 
@@ -73,6 +76,8 @@ El store asigna versiones `expected+1 … expected+n`. `Data` es opaco para el s
 - Al abrir: una cola final **sin `\n`** es una escritura rota nunca confirmada → se trunca el archivo hasta el último `\n` válido, se hace `fsync` y se informa en `RecoveryReport`.
 - Una línea **completa** inválida (JSON roto, CRC distinto, versión fuera de secuencia) → `ErrCorrupt` con número de línea: el store **no abre**. No se "repara" historia confirmada.
 - Si `write` falla se intenta truncar al tamaño previo; si `fsync` falla el store queda en `ErrStoreFailed` (no se reintenta un fsync fallido).
+- Antes de recuperar, `Open` toma un lock exclusivo no bloqueante. Si no lo consigue devuelve `ErrLocked` sin leer ni
+  truncar. El lock se libera con `Close` o al morir el proceso.
 
 ## 8. Criterios de aceptación
 
@@ -81,6 +86,6 @@ El store asigna versiones `expected+1 … expected+n`. `Data` es opaco para el s
 3. Tests de dominio con fakes escritos a mano (sin librerías de mocks).
 4. Property tests (`testing/quick`): trial balance = 0, replay determinista, proyección = fold, comandos rechazados sin efecto.
 5. Suite de contrato del `EventStore` corriendo contra memoria **y** JSONL.
-6. Fuzz nativo del decoder JSONL (corrida corta en CI).
+6. Fuzz nativo del decoder JSONL y del codec de eventos (corridas cortas en CI).
 7. Gates en CI: gofmt, go vet, staticcheck, golangci-lint, `go test -race`, cobertura de dominio reportada, gitleaks. Verde en `main`.
 8. README en español honesto, con solo números medidos.
